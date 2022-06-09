@@ -1,12 +1,9 @@
 /**
- * Servidor echo
- * -------------
+ * Servidor Chat UDP
+ * -----------------
  *
  * El servidor escucha en el IP:PUERTO indicado como parámetro en la línea de
  * comando, o 127.0.0.1:8888 en caso de que no se indique una dirección.
- *
- * Al recibir un datagrama UDP imprime el contenido del mismo, precedido de la 
- * dirección del emisor.
  *
  * Para terminar la ejecución del servidor, envíar una señal SIGTERM (^C)
  *
@@ -17,14 +14,14 @@
  *
  * ---
  * Autor: Francisco Paez
- * Fecha: 2022-05-31
- * Última modificacion: 2022-05-31
+ * Fecha: 2022-06-03
+ * Última modificacion: 2022-06-03
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <netinet/ip.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -37,18 +34,82 @@
 // Tamaño del buffer en donde se reciben los mensajes.
 #define BUFSIZE 100
 
-// Descriptor de archivo del socket.
-static int fd;
+// Estructura de datos que almacena información de un usuario.
+struct user {
+    int id;                     // Identificador númerico único
+    char name[50];              // Nombre del usuario
+    int status;                 // Online - Offline
+    struct sockaddr_in addr;    // Client addr
+};
+typedef struct user user_t;
+
+// "Lista" de usuarios registrados
+user_t users[100];
 
 // Cierra el socket al recibir una señal SIGTERM.
 void handler(int signal)
 {
-    close(fd);
     exit(EXIT_SUCCESS);
+}
+
+int user_count(int op)
+{
+    int i, c = 0;
+    switch(op) {
+        case 0: // Cuenta todos los usuarios registrados
+            for (i = 0; i < 100; i++) {
+                if (users[i].id > 0) {
+                    c = c + 1;
+                }
+            }
+            return c;
+        case 1: // Cuenta los usuario actualmente conectados
+            for (i = 0; i < 100; i++) {
+                if (users[i].id > 0 && users[i].status == 1) {
+                    c = c + 1;
+                }
+            }
+            return c;
+        default:
+            return -1;
+    }
+}
+
+int user_registration(char* username)
+{
+    // Busca el primer lugar libre
+    int i;
+    for (i = 0; i < 100; i++) {
+        if (users[i].id == 0) {
+            users[i].id = i+1;
+            users[i].status = 0;
+            strncpy(users[i].name, username, strlen(username));
+            return users[i].id;
+        }
+    }
+    return -1;
+}
+
+int user_login(int id, struct sockaddr_in addr)
+{
+    int i;
+    for (i = 0; i < 100; i++) {
+        if (users[i].id == id) {
+            users[i].status = 1;
+            users[i].addr = addr;
+            printf("[%s:%d]\n", inet_ntoa(users[i].addr.sin_addr), ntohs(users[i].addr.sin_port));
+            return users[i].status;
+        }
+    }
+    return -1;
 }
 
 int main(int argc, char* argv[])
 {
+    // Descriptor de archivo del socket.
+    static int fd;
+
+    // Dirección asociada al socket.
     struct sockaddr_in addr;
 
     // Configura el manejador de señal SIGTERM.
@@ -105,11 +166,37 @@ int main(int argc, char* argv[])
             exit(EXIT_FAILURE);
         }
 
-        // Elimina '\n' al final del buffer.
-        buf[n-1] = '\0';
+        user_t dest;
+        char command = buf[0];
+        printf("%c\n", command);
 
-        // Imprime dirección del emisor y mensaje recibido.
-        printf("[%s:%d] %s\n", inet_ntoa(src_addr.sin_addr), ntohs(src_addr.sin_port), buf);
+        // Ejecuta el comando enviado por el cliente.
+        switch(command) {
+            case 'R':
+                sprintf(buf, "%d\n", user_registration(&(buf[1])));
+                break;
+            case 'L':
+                sprintf(buf, "%d\n", user_login(atoi(&buf[1]), src_addr));
+                break;
+            case 'Q':
+                sprintf(buf, "%d\n", user_count(atoi(&buf[1])));
+                break;
+            case 'S':
+                dest = users[atoi(&buf[1])-1];
+                sprintf(buf, "%s\n", &buf[2]);
+                n = sendto(fd, buf, strlen(&buf[2])+1, 0, (struct sockaddr*) &(dest.addr), src_addr_len);
+                sprintf(buf, "%ld\n", n);
+                break;
+            default:
+                sprintf(buf, "E\n");
+        }
+
+        // Envía la respuesta al cliente.
+        n = sendto(fd, buf, strlen(buf), 0, (struct sockaddr*) &src_addr, src_addr_len);
+        if (n == -1) {
+            perror("sendto");
+            exit(EXIT_FAILURE);
+        }
     }
 
     // Cierra el socket.
@@ -117,3 +204,4 @@ int main(int argc, char* argv[])
 
     exit(EXIT_SUCCESS);
 }
+
